@@ -1,0 +1,8 @@
+{
+  "name": "WildRetter AI",
+  "description": "Intelligente Notfall-App zur Erkennung und Rettung von verletzten Wildtieren in Deutschland. Nutzt KI zur rechtlichen Triage (Jagdrecht vs. Naturschutz).",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
