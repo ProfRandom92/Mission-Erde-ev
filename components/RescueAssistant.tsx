@@ -1,13 +1,12 @@
-
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createRescueAssistant } from '../services/geminiService';
 import { ChatMessage, TriageCategory } from '../types';
+import { getStorageJSON, setStorageJSON, removeStorageItem } from '../utils/storage';
+import { STORAGE_KEYS } from '../config/constants';
 
 interface Props {
   onBack: () => void;
 }
-
-const STORAGE_KEY = 'wildretter_rescue_chat_history';
 
 export const RescueAssistant: React.FC<Props> = ({ onBack }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -22,32 +21,43 @@ export const RescueAssistant: React.FC<Props> = ({ onBack }) => {
   useEffect(() => {
     if (isInitialized.current) return;
 
-    const savedHistory = localStorage.getItem(STORAGE_KEY);
-    let initialMessages: ChatMessage[] = [];
-    
-    if (savedHistory) {
-      try {
-        initialMessages = JSON.parse(savedHistory);
-      } catch (e) {
-        console.error("Failed to parse chat history", e);
-      }
-    }
+    const defaultWelcome: ChatMessage = {
+      role: 'model',
+      text: 'Hallo! Ich bin dein WildRetter Assistent. Beschreibe mir bitte das Tier und was passiert ist. Wo befindest du dich?',
+    };
 
-    if (initialMessages.length === 0) {
-      initialMessages = [
-        { role: 'model', text: 'Hallo! Ich bin dein WildRetter Assistent. Beschreibe mir bitte das Tier und was passiert ist. Wo befindest du dich?' }
-      ];
+    let initialMessages = getStorageJSON<ChatMessage[]>(
+      STORAGE_KEYS.CHAT_HISTORY,
+      [defaultWelcome]
+    );
+
+    // Validate messages structure
+    if (
+      !Array.isArray(initialMessages) ||
+      initialMessages.length === 0 ||
+      !initialMessages.every((m) => m.role && m.text)
+    ) {
+      initialMessages = [defaultWelcome];
     }
 
     setMessages(initialMessages);
-    chatRef.current = createRescueAssistant(initialMessages);
+
+    try {
+      chatRef.current = createRescueAssistant(initialMessages);
+    } catch (error) {
+      console.error('Failed to create rescue assistant:', error);
+      // Fallback to default
+      setMessages([defaultWelcome]);
+      chatRef.current = createRescueAssistant([defaultWelcome]);
+    }
+
     isInitialized.current = true;
   }, []);
 
   // Save history to localStorage whenever messages change
   useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    if (messages.length > 0 && isInitialized.current) {
+      setStorageJSON(STORAGE_KEYS.CHAT_HISTORY, messages);
     }
   }, [messages]);
 
@@ -56,19 +66,23 @@ export const RescueAssistant: React.FC<Props> = ({ onBack }) => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, loading]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     if (!input.trim() || loading) return;
 
-    const userMsg = input;
+    const userMsg = input.trim();
     setInput('');
     const newMessages: ChatMessage[] = [...messages, { role: 'user', text: userMsg }];
     setMessages(newMessages);
     setLoading(true);
 
     try {
+      if (!chatRef.current) {
+        throw new Error('Chat ist nicht initialisiert');
+      }
+
       const response = await chatRef.current.sendMessage({ message: userMsg });
       let text = response.text || 'Entschuldigung, ich konnte dich nicht verstehen.';
-      
+
       // Category detection from tags
       if (text.includes('[CATEGORY:POLICE]')) {
         setDetectedCategory('POLICE');
@@ -78,27 +92,36 @@ export const RescueAssistant: React.FC<Props> = ({ onBack }) => {
         text = text.replace('[CATEGORY:SHELTER]', '').trim();
       }
 
-      setMessages(prev => [...prev, { role: 'model', text: text }]);
+      setMessages((prev) => [...prev, { role: 'model', text }]);
     } catch (err) {
-      console.error("Chat Error:", err);
-      setMessages(prev => [...prev, { role: 'model', text: 'Verbindungsfehler. Bitte versuche es erneut.' }]);
+      console.error('Chat Error:', err);
+      const errorMsg =
+        err instanceof Error ? err.message : 'Verbindungsfehler. Bitte versuche es erneut.';
+      setMessages((prev) => [...prev, { role: 'model', text: errorMsg }]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, loading, messages]);
 
-  const clearHistory = () => {
-    if (window.confirm("Möchtest du den gesamten Gesprächsverlauf löschen?")) {
-      localStorage.removeItem(STORAGE_KEY);
-      const welcome = { role: 'model' as const, text: 'Hallo! Ich bin dein WildRetter Assistent. Beschreibe mir bitte das Tier und was passiert ist. Wo befindest du dich?' };
+  const clearHistory = useCallback(() => {
+    if (window.confirm('Möchtest du den gesamten Gesprächsverlauf löschen?')) {
+      removeStorageItem(STORAGE_KEYS.CHAT_HISTORY);
+      const welcome: ChatMessage = {
+        role: 'model',
+        text: 'Hallo! Ich bin dein WildRetter Assistent. Beschreibe mir bitte das Tier und was passiert ist. Wo befindest du dich?',
+      };
       setMessages([welcome]);
       setDetectedCategory(null);
-      chatRef.current = createRescueAssistant([]);
+
+      try {
+        chatRef.current = createRescueAssistant([]);
+      } catch (error) {
+        console.error('Failed to recreate chat:', error);
+      }
     }
-  };
+  }, []);
 
   const isPolice = detectedCategory === 'POLICE';
-  const themeHex = isPolice ? '#ef4444' : '#52b788';
   const themeBorder = isPolice ? 'border-red-500/20' : 'border-[#52b788]/20';
   const themeBg = isPolice ? 'bg-red-500' : 'bg-[#52b788]';
   const themeBgMuted = isPolice ? 'bg-red-950/40' : 'bg-[#1b4332]/40';

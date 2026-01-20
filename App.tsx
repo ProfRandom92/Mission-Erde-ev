@@ -1,23 +1,11 @@
-
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { analyzeAnimal, compressImage } from './services/geminiService';
 import { TriageResult, LocationState } from './types';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { ResultView } from './components/ResultView';
 import { RescueAssistant } from './components/RescueAssistant';
-
-const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371e3;
-  const φ1 = lat1 * Math.PI/180;
-  const φ2 = lat2 * Math.PI/180;
-  const Δφ = (lat2-lat1) * Math.PI/180;
-  const Δλ = (lon2-lon1) * Math.PI/180;
-  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-          Math.cos(φ1) * Math.cos(φ2) *
-          Math.sin(Δλ/2) * Math.sin(Δλ/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-};
+import { hasLocationDrifted } from './utils/geolocation';
+import { GPS_CONFIG } from './config/constants';
 
 type ViewState = 'HOME' | 'RESULT' | 'ASSISTANT';
 
@@ -32,73 +20,143 @@ const App: React.FC = () => {
   const prevLocationRef = useRef<{lat: number, lng: number} | null>(null);
 
   useEffect(() => {
-    if (navigator.geolocation) {
-      const watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const { latitude, longitude, accuracy } = pos.coords;
-          if (prevLocationRef.current && image && view === 'HOME') {
-            const dist = getDistance(prevLocationRef.current.lat, prevLocationRef.current.lng, latitude, longitude);
-            if (dist > 200) {
-              setImage(null);
-              alert("Standort-Drift erkannt! Bitte nimm das Foto direkt am Fundort erneut auf.");
-            }
-          }
-          setLocation({ lat: latitude, lng: longitude, accuracy: accuracy, error: null });
-          prevLocationRef.current = { lat: latitude, lng: longitude };
-        },
-        (err) => setLocation((prev) => ({ ...prev, error: err.message })),
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-      );
-      return () => navigator.geolocation.clearWatch(watchId);
+    if (!navigator.geolocation) {
+      setLocation((prev) => ({
+        ...prev,
+        error: 'Geolocation wird von deinem Browser nicht unterstützt',
+      }));
+      return;
     }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+
+        // Check for location drift
+        if (prevLocationRef.current && image && view === 'HOME') {
+          const hasDrifted = hasLocationDrifted(
+            prevLocationRef.current.lat,
+            prevLocationRef.current.lng,
+            latitude,
+            longitude,
+            GPS_CONFIG.LOCATION_DRIFT_THRESHOLD
+          );
+
+          if (hasDrifted) {
+            setImage(null);
+            alert(
+              'Standort-Drift erkannt! Bitte nimm das Foto direkt am Fundort erneut auf.'
+            );
+          }
+        }
+
+        setLocation({ lat: latitude, lng: longitude, accuracy, error: null });
+        prevLocationRef.current = { lat: latitude, lng: longitude };
+      },
+      (err) => {
+        console.error('Geolocation error:', err);
+        setLocation((prev) => ({ ...prev, error: err.message }));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: GPS_CONFIG.WATCH_TIMEOUT,
+        maximumAge: GPS_CONFIG.MAX_AGE,
+      }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
   }, [image, view]);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      let dataUrl = reader.result?.toString() || null;
-      if (dataUrl) {
-        dataUrl = await compressImage(dataUrl);
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        alert('Bitte wähle eine gültige Bilddatei aus.');
+        return;
       }
-      setImage(dataUrl);
-      setResult(null);
-    };
-    reader.readAsDataURL(file);
-  };
 
-  const triggerAnalysis = async () => {
+      // Validate file size (max 10MB)
+      const maxSize = 10 * 1024 * 1024;
+      if (file.size > maxSize) {
+        alert('Datei ist zu groß. Maximum: 10MB');
+        return;
+      }
+
+      const reader = new FileReader();
+
+      reader.onerror = () => {
+        alert('Fehler beim Laden des Bildes.');
+      };
+
+      reader.onloadend = async () => {
+        try {
+          let dataUrl = reader.result?.toString() || null;
+          if (dataUrl) {
+            dataUrl = await compressImage(dataUrl);
+          }
+          setImage(dataUrl);
+          setResult(null);
+        } catch (error) {
+          console.error('Image compression error:', error);
+          alert('Fehler bei der Bildkompression.');
+        }
+      };
+
+      reader.readAsDataURL(file);
+    },
+    []
+  );
+
+  const triggerAnalysis = useCallback(async () => {
     if (!image) return;
+
     setLoading(true);
     try {
       const base64 = image.split(',')[1];
+      if (!base64) {
+        throw new Error('Ungültiges Bildformat');
+      }
+
       const data = await analyzeAnimal(base64);
       setResult(data);
       setView('RESULT');
     } catch (err) {
-      alert("Fehler bei der Analyse. Prüfe deine Verbindung.");
+      console.error('Analysis error:', err);
+      const errorMessage =
+        err instanceof Error ? err.message : 'Fehler bei der Analyse';
+      alert(`${errorMessage}\nBitte prüfe deine Verbindung und versuche es erneut.`);
       setImage(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, [image]);
 
-  const reset = () => {
+  const reset = useCallback(() => {
     setImage(null);
     setResult(null);
     setView('HOME');
-  };
+  }, []);
 
-  const openAssistant = () => {
+  const openAssistant = useCallback(() => {
     setLastView(view);
     setView('ASSISTANT');
-  };
+  }, [view]);
 
-  const closeAssistant = () => {
+  const closeAssistant = useCallback(() => {
     setView(lastView);
-  };
+  }, [lastView]);
+
+  // Memoize GPS accuracy check
+  const isGpsAccurate = useMemo(
+    () =>
+      location.lat !== null &&
+      location.accuracy !== null &&
+      location.accuracy < GPS_CONFIG.HIGH_ACCURACY_THRESHOLD,
+    [location.lat, location.accuracy]
+  );
 
   return (
     <div className="min-h-screen mission-gradient flex flex-col p-6 safe-area-inset relative">
@@ -112,13 +170,34 @@ const App: React.FC = () => {
             <p className="text-[10px] font-bold text-[#95d5b2] uppercase tracking-[0.2em]">Mission Erde Community</p>
           </div>
         </div>
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all ${location.lat ? (location.accuracy && location.accuracy < 50 ? 'bg-[#1b4332]/50 border-[#52b788]/50' : 'bg-yellow-500/20 border-yellow-500/50') : 'bg-red-500/20 border-red-500/50'}`}>
-           <span className={`w-2 h-2 rounded-full ${location.lat ? (location.accuracy && location.accuracy < 50 ? 'bg-[#52b788] animate-pulse' : 'bg-yellow-500') : 'bg-red-500'}`}></span>
-           <span className="text-[9px] font-black uppercase text-white/80">{location.lat ? (location.accuracy && location.accuracy < 50 ? 'GPS OK' : 'GPS Ungenau') : 'Kein GPS'}</span>
+        <div
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all ${
+            isGpsAccurate
+              ? 'bg-[#1b4332]/50 border-[#52b788]/50'
+              : location.lat
+              ? 'bg-yellow-500/20 border-yellow-500/50'
+              : 'bg-red-500/20 border-red-500/50'
+          }`}
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${
+              isGpsAccurate
+                ? 'bg-[#52b788] animate-pulse'
+                : location.lat
+                ? 'bg-yellow-500'
+                : 'bg-red-500'
+            }`}
+          ></span>
+          <span className="text-[9px] font-black uppercase text-white/80">
+            {isGpsAccurate ? 'GPS OK' : location.lat ? 'GPS Ungenau' : 'Kein GPS'}
+          </span>
         </div>
       </header>
 
-      {!result && view === 'HOME' && location.accuracy !== null && location.accuracy > 50 && (
+      {!result &&
+        view === 'HOME' &&
+        location.accuracy !== null &&
+        location.accuracy > GPS_CONFIG.HIGH_ACCURACY_THRESHOLD && (
         <div className="mb-6 p-5 bg-[#ffb703]/10 border border-[#ffb703]/40 rounded-3xl flex items-center gap-5 animate-in fade-in slide-in-from-top-4 duration-500 shadow-xl">
           <div className="w-10 h-10 rounded-full bg-[#ffb703]/20 flex items-center justify-center flex-shrink-0">
             <i className="fas fa-location-crosshairs text-[#ffb703] text-lg"></i>
