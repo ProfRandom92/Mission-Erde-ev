@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { analyzeAnimal, compressImage } from './services/geminiService';
 import { TriageResult, LocationState } from './types';
 import { LoadingOverlay } from './components/LoadingOverlay';
@@ -309,6 +310,7 @@ const App: React.FC = () => {
           </div>
         </footer>
       )}
+      <SpeedInsights />
     </div>
   );
 };
