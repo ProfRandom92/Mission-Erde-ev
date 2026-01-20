@@ -92,8 +92,6 @@ export const ResultView: React.FC<Props> = ({ result, location, onReset }) => {
   };
 
   const isPolice = result.category === 'POLICE';
-  const themeColor = isPolice ? 'red' : 'emerald';
-  const themeHex = isPolice ? '#ef4444' : '#52b788';
   const themeBg = isPolice ? 'bg-red-950/30' : 'bg-[#1b4332]/30';
   const themeBorder = isPolice ? 'border-red-500/20' : 'border-[#52b788]/20';
   

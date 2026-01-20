@@ -1,42 +1,57 @@
+import { TriageCategory, ServicePoint } from '../types';
+import { SERVICE_POINTS } from './mockData';
+import { getDistanceInKilometers } from '../utils/geolocation';
 
-import { TriageCategory, ServicePoint } from "../types";
-import { SERVICE_POINTS } from "./mockData";
-
-function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371; // Radius of the earth in km
-  const dLat = deg2rad(lat2 - lat1);
-  const dLon = deg2rad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const d = R * c; // Distance in km
-  return d;
-}
-
-function deg2rad(deg: number) {
-  return deg * (Math.PI / 180);
-}
-
+/**
+ * Find the nearest service point based on category and location
+ * @returns Service point with distance in kilometers, or null if none found
+ */
 export const findNearestServicePoint = (
   lat: number,
   lng: number,
   category: TriageCategory
 ): { point: ServicePoint; distance: number } | null => {
   const filtered = SERVICE_POINTS.filter((p) => p.type === category);
+
   if (filtered.length === 0) return null;
 
-  let nearest = filtered[0];
-  let minDistance = getDistance(lat, lng, nearest.lat, nearest.lng);
+  // Find the nearest point using reduce for better performance
+  const result = filtered.reduce<{ point: ServicePoint; distance: number } | null>(
+    (nearest, current) => {
+      const distance = getDistanceInKilometers(lat, lng, current.lat, current.lng);
 
-  for (let i = 1; i < filtered.length; i++) {
-    const d = getDistance(lat, lng, filtered[i].lat, filtered[i].lng);
-    if (d < minDistance) {
-      minDistance = d;
-      nearest = filtered[i];
-    }
-  }
+      if (!nearest || distance < nearest.distance) {
+        return { point: current, distance };
+      }
 
-  return { point: nearest, distance: minDistance };
+      return nearest;
+    },
+    null
+  );
+
+  return result;
+};
+
+/**
+ * Find all service points within a given radius
+ * @param radiusKm - Search radius in kilometers
+ * @returns Array of service points with distances
+ */
+export const findServicePointsInRadius = (
+  lat: number,
+  lng: number,
+  category: TriageCategory,
+  radiusKm: number
+): Array<{ point: ServicePoint; distance: number }> => {
+  const filtered = SERVICE_POINTS.filter((p) => p.type === category);
+
+  const results = filtered
+    .map((point) => ({
+      point,
+      distance: getDistanceInKilometers(lat, lng, point.lat, point.lng),
+    }))
+    .filter((result) => result.distance <= radiusKm)
+    .sort((a, b) => a.distance - b.distance);
+
+  return results;
 };
